@@ -53,7 +53,7 @@ type autoAction struct {
 	run       func(p *Panel, a *auth.Auth) (string, error)
 }
 
-const globalTaskWriteMessage = "国际区任务暂仅支持查询，请在官方客户端操作"
+const globalTaskWriteMessage = "国际版任务可查询，自动完成与领奖尚未验证可用；请先在官方客户端操作并刷新状态。签到、活跃上报和保活可单独运行。"
 
 // autoTaskOutcome 是统一任务执行器的结果。Status 是任务状态机的唯一完成判据：
 // done 只表示服务端已确认领取或领奖请求已成功；未入账、领奖失败、读错均保留各自状态。

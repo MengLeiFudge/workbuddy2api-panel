@@ -133,6 +133,9 @@ func TestListGlobalTasksPreservesObservedSchemaAndUnknownFields(t *testing.T) {
 		if task.TaskCode != wantCodes[i] || task.Code != wantCodes[i] || task.TaskID != int64(i+1) || task.Status != "available" {
 			t.Errorf("task[%d] identifiers/status = (%q, %q, %d, %q)", i, task.TaskCode, task.Code, task.TaskID, task.Status)
 		}
+		if task.LevelName == "" {
+			t.Errorf("task[%d] lost global level_name", i)
+		}
 		if task.ProgressKnown || task.RewardKnown {
 			t.Errorf("task[%d] unknown progress/reward marked known", i)
 		}
@@ -152,6 +155,16 @@ func TestListGlobalTasksPreservesObservedSchemaAndUnknownFields(t *testing.T) {
 	}
 	if got := []string{tasks[0].TaskCode, tasks[1].TaskCode, tasks[2].TaskCode, tasks[3].TaskCode, tasks[4].TaskCode}; !reflect.DeepEqual(got, wantCodes) {
 		t.Fatalf("task codes = %v, want %v", got, wantCodes)
+	}
+}
+
+func TestGlobalTaskURLFallbackPreservesCNJump(t *testing.T) {
+	tasks, err := parseGrowthTasks(json.RawMessage(`{"tasks":[{"code":"first_chat","url":"workbuddy://chat"},{"task_code":"chat_5","url":"workbuddy://other","jump_url":"workbuddy://cn"}]}`))
+	if err != nil || len(tasks) != 2 {
+		t.Fatalf("tasks=%+v err=%v", tasks, err)
+	}
+	if tasks[0].JumpURL != "workbuddy://chat" || tasks[1].JumpURL != "workbuddy://cn" {
+		t.Fatalf("unexpected task destinations: %+v", tasks)
 	}
 }
 

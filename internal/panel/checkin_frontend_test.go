@@ -45,18 +45,28 @@ assert(failed.message.includes('不足 7 天'),'失败要透传上游原因：'+
 const pending=note({checkin_state:'pending',checkin_done:false});
 assert.equal(pending.severity,'warn');
 
+const inactive=note({checkin_state:'inactive',skipped:true,skip_reason:'国际版签到活动未开放或已结束',credits:7});
+assert.equal(inactive.severity,'');
+assert(inactive.message.includes('未开放'));
+assert(inactive.message.includes('当前积分 7'));
+assert(!inactive.message.includes('签到成功'));
+assert(!inactive.message.includes('+100'));
+const balanceFailed=note({checkin_state:'inactive',skipped:true,skip_reason:'活动未开放',balance_error:'timeout'});
+assert.equal(balanceFailed.severity,'warn');
+assert(balanceFailed.message.includes('余额刷新失败'));
+
 // 兼容老响应（没有 checkin_state）：checkin_done 语义不变。
 assert.equal(note({checkin_done:true,credits:350}).severity,'ok');
 assert.equal(note({checkin_done:false,checkin_error:'活动未开启',credits:350}).severity,'err');
 assert.notEqual(note({skipped:true,skip_reason:'国际区不适用'}).severity,'ok');
 
-// 批量签到归类：只有本次真签到算 ok；already、不适用（国际区号后端回 ok:true+skipped）各自单独计，
-// pending / failed 都不能混进成功。
+// 批量签到归类：只有本次真签到算 ok，已签和跳过分别计数。
 const okOf=r=>{const c=batch(r);return [c.ok,c.already,c.skipped].map(Number).join('');};
 assert.equal(okOf({ok:true,checkin_state:'checked',checkin_done:true,checkin_credit:100}),'100');
 assert.equal(okOf({ok:true,checkin_state:'checked',checkin_done:true,balance_error:'timeout'}),'100','签到成功但余额刷新失败仍算签到成功');
 assert.equal(okOf({ok:true,checkin_state:'already',checkin_done:true}),'010');
-assert.equal(okOf({ok:true,skipped:true,skip_reason:'国际区账号不适用国内区签到'}),'001','ok:true 的 skipped 不能算新签到');
+assert.equal(okOf({ok:false,skipped:true,checkin_state:'inactive',skip_reason:'国际版签到活动未开放'}),'001','活动未开放不算新签到');
+assert.equal(okOf({ok:false,checkin_state:'inactive'}),'001','inactive 即使未带 skipped 也应归为跳过');
 assert.equal(okOf({ok:false,checkin_state:'pending'}),'000');
 assert.equal(okOf({ok:false,checkin_state:'failed',checkin_message:'签到失败'}),'000');
 console.log('checkin result states passed');`

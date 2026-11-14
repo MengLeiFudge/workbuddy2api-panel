@@ -41,6 +41,7 @@ type Task struct {
 	TaskID         int64  `json:"task_id,omitempty"`
 	Title          string `json:"title,omitempty"`
 	Description    string `json:"description,omitempty"` // 操作指引（含跳转说明）
+	LevelName      string `json:"level_name,omitempty"`  // 国际版任务等级
 	TaskDesc       string `json:"task_desc,omitempty"`   // 达成条件简述
 	Credit         int64  `json:"credit,omitempty"`      // 奖励积分（上游 reward_credit）
 	Energy         int64  `json:"energy,omitempty"`      // 奖励能量（上游 reward_energy）
@@ -195,6 +196,7 @@ func parseGrowthTasks(data json.RawMessage) ([]Task, error) {
 			Title        string          `json:"title"`
 			Description  string          `json:"description"`
 			TaskDesc     string          `json:"task_desc"`
+			LevelName    string          `json:"level_name"`
 			RewardCredit int64           `json:"reward_credit"` // 上游实际字段名（reward_ 前缀）
 			RewardEnergy int64           `json:"reward_energy"`
 			HasReward    bool            `json:"has_reward"`
@@ -202,6 +204,7 @@ func parseGrowthTasks(data json.RawMessage) ([]Task, error) {
 			TaskType     string          `json:"task_type"`
 			Tag          string          `json:"tag"`
 			JumpURL      string          `json:"jump_url"`
+			URL          string          `json:"url"`
 			Locked       bool            `json:"locked"`
 			AcceptStatus string          `json:"accept_status"`
 			Status       string          `json:"status"`
@@ -248,6 +251,10 @@ func parseGrowthTasks(data json.RawMessage) ([]Task, error) {
 		energyKnown := hasJSONValue(fields, "reward_energy")
 		hasRewardKnown := hasJSONValue(fields, "has_reward")
 		rewardKnown := creditKnown || energyKnown || hasRewardKnown
+		jumpURL := t.JumpURL
+		if jumpURL == "" {
+			jumpURL = t.URL
+		}
 		claimed := t.AcceptStatus == "claimed"
 		out = append(out, Task{
 			TaskCode:       taskCode,
@@ -256,13 +263,14 @@ func parseGrowthTasks(data json.RawMessage) ([]Task, error) {
 			Title:          t.Title,
 			Description:    t.Description,
 			TaskDesc:       t.TaskDesc,
+			LevelName:      t.LevelName,
 			Credit:         t.RewardCredit,
 			Energy:         t.RewardEnergy,
 			HasReward:      t.HasReward,
 			RewardBuddy:    t.RewardBuddy,
 			TaskType:       t.TaskType,
 			Tag:            t.Tag,
-			JumpURL:        t.JumpURL,
+			JumpURL:        jumpURL,
 			Locked:         t.Locked,
 			Target:         tgt,
 			Current:        cur,

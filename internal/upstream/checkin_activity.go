@@ -15,11 +15,12 @@
 // 为什么值得一查：本机 pool 的 checkin_done 只记录**我们自己**发起的签到，用户从手机 /
 // 官方客户端签过就看不到；上游的 today_checked_in 才是权威事实。且活动带截止日，
 // 停摆（关机 / 排程关）会静默过期——active=false 与 end_time 让这件事提前显形。
-// 本方法只读、无副作用，调用方失败只记日志（不得据此跳过签到）。
+// CN 查询失败时仍可尝试签到；国际版以活动状态为写入前提，查询失败时不提交签到。
 package upstream
 
 import (
 	"encoding/json"
+	"errors"
 	"net/http"
 
 	"github.com/misakano7545/workbuddy2api-panel/internal/auth"
@@ -36,7 +37,7 @@ type CheckinActivity struct {
 	TodayCheckedIn  bool   `json:"today_checked_in"`  // 今天是否已签到（权威口径）
 	StreakDays      int64  `json:"streak_days"`       // 当前连续签到天数
 	DailyCredit     int64  `json:"daily_credit"`      // 每日签到积分
-	TodayCredit     int64  `json:"today_credit"`      // 今天已到账积分
+	TodayCredit     int64  `json:"today_credit"`      // 上游当天积分配置，不代表本次到账
 	WeekCheckinDays int64  `json:"week_checkin_days"` // 本周已签天数
 	TotalCredits    int64  `json:"total_credits"`     // 活动累计积分
 	EndTime         string `json:"end_time"`          // 活动截止（"2006-01-02 15:04:05"，无时区）
@@ -58,9 +59,16 @@ func (c *Client) GetCheckinActivityStatus(a *auth.Auth) (CheckinActivity, error)
 	if err != nil {
 		return CheckinActivity{}, err
 	}
-	var st CheckinActivity
-	if err := json.Unmarshal(data, &st); err != nil {
+	var response struct {
+		CheckinActivity
+		Active *bool `json:"active"`
+	}
+	if err := json.Unmarshal(data, &response); err != nil {
 		return CheckinActivity{}, err
 	}
-	return st, nil
+	if response.Active == nil {
+		return CheckinActivity{}, errors.New("check-in activity response missing active")
+	}
+	response.CheckinActivity.Active = *response.Active
+	return response.CheckinActivity, nil
 }

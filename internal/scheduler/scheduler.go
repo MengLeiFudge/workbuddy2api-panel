@@ -765,8 +765,7 @@ func (s *Scheduler) runActivity(ctx context.Context, spread bool) {
 		// /v2/report 在 workbuddy.ai 上实测 code=0 可用（PR #45），billingBase(a)
 		// 按 realm 切 base、BillingHeaders 按 realm 切 Origin/Referer/UA——此前
 		// 照抄的「D4 门控：global 无任务中心/活跃体系」会让国际版从不发上报，
-		// 连登永远点不亮、每日积分拿不到。签到/旅行各自的 global 门控不在此列
-		// （它们确实没有国际版端点），别顺手删。
+		// 连登永远点不亮、每日积分拿不到。签到与旅行各自保留独立的活动判定。
 		if !first {
 			if !sleepCtx(ctx, activityAccountDelay) {
 				return // 优雅停机：不等限速睡满，剩余账号下轮再报

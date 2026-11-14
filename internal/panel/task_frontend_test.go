@@ -21,8 +21,10 @@ const start=src.indexOf('function checkinResultNote('),end=src.indexOf('// 可�
 assert(start>=0&&end>start);
 const ctx={AUTO_TASKS:{chat_5:'chat'},GROWTH_TITLES:{}};
 vm.createContext(ctx);vm.runInContext(src.slice(start,end),ctx);
-const global=ctx.taskRowPresentation({task_code:'first_chat',code:'first_chat',task_id:1,status:'available',progress_known:false,reward_known:false},{accept:false,claim:false,automate:false});
+const global=ctx.taskRowPresentation({task_code:'first_chat',code:'first_chat',task_id:1,status:'available',progress_known:false,reward_known:false,level_name:'养虾尝试',description:'使用 WorkBuddy 完成至少一次对话交互'},{accept:false,claim:false,automate:false});
 assert.equal(global.code,'first_chat');assert.equal(global.progress,'未提供');assert.equal(global.reward,'未提供');assert.equal(global.action,'');
+assert.equal(global.state,'未完成');assert(global.detail.includes('养虾尝试'));assert(global.detail.includes('至少一次对话'));
+assert.equal(ctx.taskRowPresentation({code:'first_chat',status:'completed',progress_known:false,reward_known:false},{accept:false,claim:false,automate:false}).state,'已完成');
 const cn=ctx.taskRowPresentation({task_code:'chat_5',current:0,target:5,accept_status:'accepted'},{accept:true,claim:true,automate:true});
 assert.equal(cn.progress,'0 / 5');assert.equal(cn.action,'auto');
 assert.equal(ctx.taskRowPresentation({task_code:'',target:5},{accept:true,claim:true,automate:true}).action,'');

@@ -136,37 +136,84 @@ func TestGlobalTaskWriteEndpointsDoNotCallUpstream(t *testing.T) {
 	}
 }
 
-func TestGlobalCheckinIsSkippedWithoutUpstreamRequest(t *testing.T) {
+func TestGlobalManualCheckinUsesActivityAndRefreshesBalance(t *testing.T) {
 	useRealmForTest(t)
-	var requests atomic.Int32
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		requests.Add(1)
-		_, _ = w.Write([]byte(`{"code":0,"message":"OK","data":{}}`))
-	}))
-	defer srv.Close()
+	for _, tc := range []struct {
+		name, activity, claim, state string
+		activityStatus, claimStatus  int
+		writes, credit               int
+		done, skipped, creditKnown   bool
+	}{
+		{"inactive", `{"active":false,"daily_credit":100,"today_credit":100}`, "", "inactive", 200, 200, 0, 0, false, true, false},
+		{"active", `{"active":true,"today_checked_in":false,"daily_credit":100}`, `{"credit":17}`, "checked", 200, 200, 1, 17, true, false, true},
+		{"already", `{"active":true,"today_checked_in":true,"today_credit":100}`, "", "already", 200, 200, 0, 0, true, false, false},
+		{"already after race", `{"active":true}`, `{"code":10001,"msg":"今天已签到，请明天再来"}`, "already", 200, 400, 1, 0, true, false, false},
+		{"claim failed", `{"active":true}`, `{"code":10001,"msg":"签到失败，请稍后重试"}`, "failed", 200, 400, 1, 0, false, false, false},
+		{"state unavailable", `{}`, "", "failed", 401, 200, 0, 0, false, false, false},
+		{"unknown state", `{}`, "", "failed", 200, 200, 0, 0, false, false, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var reads, writes, balances atomic.Int32
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				switch r.URL.Path {
+				case "/billing/meter/checkin-activity-status":
+					reads.Add(1)
+					w.WriteHeader(tc.activityStatus)
+					_, _ = w.Write([]byte(`{"code":0,"data":` + tc.activity + `}`))
+				case "/billing/meter/daily-checkin":
+					writes.Add(1)
+					w.WriteHeader(tc.claimStatus)
+					_, _ = w.Write([]byte(tc.claim))
+				case "/billing/meter/get-user-resource-summary":
+					balances.Add(1)
+					_, _ = w.Write([]byte(`{"code":0,"data":{"Packages":[{"PackageCode":"free","CycleRemainCapacity":"7","CycleTotalCapacity":"12"}]}}`))
+				case "/billing/meter/get-user-resource-paid-packages", "/billing/meter/get-user-resource-free-packages":
+					_, _ = w.Write([]byte(`{"code":0,"data":{"Accounts":[],"TotalCount":0}}`))
+				default:
+					t.Errorf("unexpected international billing path: %s", r.URL.Path)
+					http.NotFound(w, r)
+				}
+			}))
+			defer srv.Close()
 
-	up := upstream.New()
-	up.HTTP, up.BillingBaseGlobal = srv.Client(), srv.URL
-	p := panelWithTestAccount(testRealmAuth(t, "global-1", "global"), up)
-	rec := httptest.NewRecorder()
-	p.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/panel/api/accounts/global-1/checkin", nil))
-	if rec.Code != http.StatusOK {
-		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
-	}
-	var response struct {
-		Skipped    bool   `json:"skipped"`
-		Realm      string `json:"realm"`
-		Done       bool   `json:"checkin_done"`
-		SkipReason string `json:"skip_reason"`
-	}
-	if err := json.Unmarshal(rec.Body.Bytes(), &response); err != nil {
-		t.Fatal(err)
-	}
-	if !response.Skipped || response.Realm != "global" || response.Done || response.SkipReason == "" {
-		t.Fatalf("response=%+v", response)
-	}
-	if got := requests.Load(); got != 0 {
-		t.Fatalf("global check-in made %d upstream requests, want 0", got)
+			up := upstream.New()
+			up.HTTP, up.ChatHTTP, up.BillingBaseGlobal = srv.Client(), nil, srv.URL
+			p := panelWithTestAccount(testRealmAuth(t, "global-1", "global"), up)
+			rec := httptest.NewRecorder()
+			p.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/panel/api/accounts/global-1/checkin", nil))
+			if rec.Code != http.StatusOK {
+				t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+			}
+			var response struct {
+				OK, Skipped bool
+				Realm       string
+				Done        bool   `json:"checkin_done"`
+				State       string `json:"checkin_state"`
+				SkipReason  string `json:"skip_reason"`
+				Credit      *int   `json:"checkin_credit"`
+				Credits     int64  `json:"credits"`
+				Error       string `json:"checkin_error"`
+			}
+			if err := json.Unmarshal(rec.Body.Bytes(), &response); err != nil {
+				t.Fatal(err)
+			}
+			if response.Realm != "global" || response.State != tc.state || response.Done != tc.done || response.OK != tc.done || response.Skipped != tc.skipped {
+				t.Fatalf("unexpected global check-in result: %s", rec.Body.String())
+			}
+			if (response.Credit != nil) != tc.creditKnown || (response.Credit != nil && *response.Credit != tc.credit) {
+				t.Fatalf("must report actual receipt credit only: %s", rec.Body.String())
+			}
+			if tc.skipped && (response.SkipReason == "" || response.Error != "") {
+				t.Fatalf("inactive activity must explain skip without reporting failure: %s", rec.Body.String())
+			}
+			if reads.Load() != 1 || writes.Load() != int32(tc.writes) || balances.Load() != 1 || response.Credits != 7 {
+				t.Fatalf("reads=%d writes=%d balances=%d response=%s", reads.Load(), writes.Load(), balances.Load(), rec.Body.String())
+			}
+			st, _ := p.cfg.Pool.Status("global-1")
+			if st.CheckinDone != tc.done {
+				t.Fatalf("persisted check-in done=%v, want %v", st.CheckinDone, tc.done)
+			}
+		})
 	}
 }
 

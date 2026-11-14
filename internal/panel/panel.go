@@ -1170,22 +1170,10 @@ func (p *Panel) accountCheckin(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusNotFound, "account not found")
 		return
 	}
-	if a.IsGlobal() {
-		writeJSON(w, http.StatusOK, map[string]any{
-			"ok":           true,
-			"realm":        "global",
-			"skipped":      true,
-			"skip_reason":  "国际区账号不适用国内区签到",
-			"checkin_done": false,
-		})
-		return
-	}
 	checkinMsg := ""
 	checkinDone := false
-	// checkin_state 是「这次签到到底发生了什么」的权威答复，四态见 upstream.CheckinState：
-	// checked（本次真签到、上游发了积分）/ already（今天早就签过、一个积分都没发）/
-	// pending（上游处理中，可稍后重试）/ failed。前端据此出文案与配色——只凭
-	// checkin_done 会把 already 和 checked 说成同一句话（同类项目 hub#875 的坑）。
+	// 回执区分本次签到、今天已签、处理中、失败与国际活动未开放；
+	// 活动未开放不会标记今日已签，后续活动开放时仍可重试。
 	checkinState := ""
 	checkinCredit, checkinCreditKnown := 0, false
 	// 企业版无签到体系（上游 400 code 10001「企业账号不支持该操作」）：不发起该调用，
@@ -1216,9 +1204,11 @@ func (p *Panel) accountCheckin(w http.ResponseWriter, r *http.Request) {
 			checkinCredit, checkinCreditKnown = receipt.Credit, true
 		}
 	}
-	// realm 取账号真值，不写字面量：上面 global 分支一旦被改（提前返回挪走、门控放宽），
-	// 这里硬写的 "cn" 会让国际号拿到错误回显。
 	resp := map[string]any{"ok": checkinDone, "realm": a.Realm(), "checkin_done": checkinDone, "checkin_state": checkinState}
+	if checkinState == string(upstream.CheckinInactive) {
+		resp["skipped"] = true
+		resp["skip_reason"] = checkinMsg
+	}
 	if checkinCreditKnown {
 		resp["checkin_credit"] = checkinCredit
 	}
@@ -1230,7 +1220,7 @@ func (p *Panel) accountCheckin(w http.ResponseWriter, r *http.Request) {
 	}
 	if checkinMsg != "" {
 		resp["checkin_message"] = checkinMsg
-		if !checkinDone {
+		if !checkinDone && checkinState != string(upstream.CheckinInactive) {
 			resp["checkin_error"] = checkinMsg
 		}
 	}

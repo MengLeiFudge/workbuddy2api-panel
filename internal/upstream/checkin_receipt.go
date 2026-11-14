@@ -21,6 +21,7 @@ package upstream
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"strings"
 
@@ -35,6 +36,8 @@ const (
 	CheckinChecked CheckinState = "checked"
 	// CheckinAlready 今天早些时候已签过，本次一个积分都没发。
 	CheckinAlready CheckinState = "already"
+	// CheckinInactive 国际版签到活动未开放或已结束，本次未提交签到。
+	CheckinInactive CheckinState = "inactive"
 	// CheckinPending 上游「请求处理中」：没签成，但可以稍后重试（不是终态）。
 	CheckinPending CheckinState = "pending"
 	// CheckinFailed 上游拒签（业务错误 / 风控 / 参数）。
@@ -66,10 +69,23 @@ type CheckinReceipt struct {
 	Msg         string
 }
 
-// CheckinReceipt 执行签到并回执分类结果。
-// 返回的 error 语义与 DailyCheckin 一致（非 checked/already 都算错），方便老调用方
-// 只看 error 就够；需要区分「本次真签到」和「今天早就签过」的调用方读 receipt。
+// CheckinReceipt 执行签到并回执分类结果。国际版先读活动状态，未开放或状态未知时不写入。
+// 返回的 error 保留 DailyCheckin 的旧语义；需要区分本次发放、已签和活动关闭时读取 State。
 func (c *Client) CheckinReceipt(a *auth.Auth) (CheckinReceipt, error) {
+	if c.globalOn(a) {
+		activity, err := c.GetCheckinActivityStatus(a)
+		if err != nil {
+			err = fmt.Errorf("国际版签到活动状态查询失败：%w", err)
+			return CheckinReceipt{State: CheckinFailed, Msg: err.Error()}, err
+		}
+		if !activity.Active {
+			msg := "国际版签到活动未开放或已结束，已跳过签到"
+			return CheckinReceipt{State: CheckinInactive, Msg: msg}, &Error{Kind: ErrClient, Msg: msg}
+		}
+		if activity.TodayCheckedIn {
+			return CheckinReceipt{State: CheckinAlready, StreakDays: int(activity.StreakDays), Msg: "今天已签到，无需重复"}, nil
+		}
+	}
 	var rec CheckinReceipt
 	err := c.retryBillingTransient(func() error {
 		env, raw, e := c.billingMeterRaw(a, c.checkinMeterPaths(a), http.MethodPost, map[string]any{})

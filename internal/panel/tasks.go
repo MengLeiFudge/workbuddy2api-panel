@@ -52,8 +52,8 @@ func (p *Panel) accountTasks(w http.ResponseWriter, r *http.Request) {
 	capabilities := map[string]bool{"accept": true, "claim": true, "automate": true}
 	response := map[string]any{"ok": true, "realm": realm, "capabilities": capabilities, "tasks": tasks}
 	if a.IsGlobal() {
-		// Global task data has a read-only schema with code/task_id/status but no
-		// verified accept, claim, or automation contract. Do not probe the MP API.
+		// 国际版实机在真实对话及桌面事件成功后仍返回 available，领奖返回 task not completed。
+		// 请求被接受不代表任务已完成；保留写入限制，也不探测国内小程序接口。
 		capabilities["accept"], capabilities["claim"], capabilities["automate"] = false, false, false
 		response["message"] = globalTaskWriteMessage
 	} else {

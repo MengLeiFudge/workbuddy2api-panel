@@ -1084,7 +1084,7 @@ if ($('accGroupActions')) {
         const r = await api('accounts/' + encodeURIComponent(s.uid) + '/' + b.dataset.gact, { method: 'POST' });
         /* 签到端点对失败也回 200（错误在 body 里）：只按 HTTP 成功计数，会把「今天早就
            签过」和上游拒签一起算进「成功 N 个」——hub#875 那类误报的同一个根。
-           按 checkin_state 分开统计，already / 不适用（国际区号等）各自单独报，不冒充新签到。 */
+           按 checkin_state 分开统计，今天已签、活动未开放、无签到体系各自报告，不冒充新签到。 */
         if (b.dataset.gact === 'checkin') {
           const c = checkinBatchResult(r);
           if (c.already) { already++; continue; }
@@ -2537,18 +2537,20 @@ let taskJobTimer = null, taskJobPolling = null, taskJobID = null, taskJobGenerat
 let taskJobsLoading = false;
 
 // 服务端状态与界面反馈共用的纯函数，避免把已提交/失败当成已完成。
-/* 签到四态文案（checkin_state 由后端按回执判定，见 upstream.CheckinState）：
+/* 签到结果文案（checkin_state 由后端按回执判定，见 upstream.CheckinState）：
    checked = 本次真签到、上游发了积分；already = 今天早就签过、一个积分都没发；
-   pending = 上游还在处理；failed = 上游拒签。
+   pending = 上游还在处理；failed = 上游拒签；inactive = 国际版活动未开放或已结束。
    关键：already 和 checked 的事实不同。以前只凭 checkin_done 一律显示「签到已完成」
    （绿色），重复点按钮看起来像能无限刷积分——同类项目 hub#875 在生产 1288 条签到
    记录里就踩了同一个坑（250 条幂等拒绝被报成「签到成功 (+100积分)」）。
    积分数字只取上游这次真实带回的 checkin_credit，取不到就不显示，绝不硬编码。 */
 function checkinResultNote(r) {
-  if (r.skipped) return { message: r.skip_reason || '该账号不适用签到', severity: '' };
   const balance = r.credits != null ? '，当前积分 ' + r.credits + (r.credits_total > 0 ? '/' + r.credits_total : '') : '';
   const state = r.checkin_state || (r.checkin_done ? 'checked' : 'failed');
-  if (state === 'skipped') return { message: r.checkin_message || r.skip_reason || '该账号不适用签到', severity: '' };
+  if (r.skipped || state === 'skipped' || state === 'inactive') {
+    const message = (r.skip_reason || r.checkin_message || '该账号不适用签到') + balance;
+    return r.balance_error ? { message: message + '；余额刷新失败：' + r.balance_error, severity: 'warn' } : { message, severity: '' };
+  }
   if (state === 'already') return { message: '今天已签到，无需重复，上游不会再发积分' + balance, severity: '' };
   if (state === 'pending') return { message: '签到未完成：上游还在处理，稍后重试' + balance, severity: 'warn' };
   if (state !== 'checked') return { message: '签到未完成：' + (r.checkin_message || '请稍后重试') + balance, severity: 'err' };
@@ -2556,11 +2558,10 @@ function checkinResultNote(r) {
   if (r.balance_error) return { message: '签到成功' + gain + '；余额刷新失败：' + r.balance_error, severity: 'err' };
   return { message: '签到成功' + gain + balance, severity: 'ok' };
 }
-// 批量签到里一个号的归类：只有本次真签到才算 ok；今天已签过 / 不适用签到（国际区、企业版、API Key）
-// 各自单独计数，处理中（pending）与失败都不算成功。
+// 批量签到只有本次真签到算 ok；已签、活动未开放与无签到体系分别计数，处理中和失败不算成功。
 function checkinBatchResult(r) {
   const n = checkinResultNote(r);
-  const state = r.skipped ? 'skipped' : (r.checkin_state || (r.checkin_done ? 'checked' : 'failed'));
+  const state = r.skipped || r.checkin_state === 'inactive' ? 'skipped' : (r.checkin_state || (r.checkin_done ? 'checked' : 'failed'));
   return { ok: state === 'checked', already: state === 'already', skipped: state === 'skipped', text: n.message };
 }
 
@@ -2596,11 +2597,12 @@ function taskRowPresentation(t, caps) {
   const reward = t.reward_known === false ? '未提供' : rewards.join(' ') || '—';
   const state = t.claimed ? '已领取' : t.claimable ? '可领取' : t.locked ? '未解锁'
     : t.accept_status === 'accepted' ? '进行中' : t.status === 'completed' || t.status === 'complete' ? '已完成'
-    : t.status === 'available' ? '可在客户端完成' : '未接受';
+    : t.status === 'available' ? '未完成' : t.status || '未接受';
   // first_buddy 特例（与后端一致）：进度满≠可领，按钮仍走"一键完成"动作链。
   const action = !code || t.claimed || t.locked ? '' : t.claimable && caps.claim && code !== 'first_buddy' ? 'claim'
     : caps.automate && AUTO_TASKS[code] ? 'auto' : t.accept_status !== 'accepted' && caps.accept ? 'accept' : '';
-  return { code, progress, reward, state, action };
+  const detail = [t.level_name, t.task_desc || t.description].filter(Boolean).join(' · ');
+  return { code, progress, reward, state, action, detail };
 }
 
 // 可自动完成的任务（与后端 autoActions 表一致）：判据为行为事件、可经网关复现。
@@ -2810,7 +2812,7 @@ async function loadTasks() {
     taskCapabilities = d.capabilities || { accept: d.realm !== 'global', claim: d.realm !== 'global', automate: d.realm !== 'global' };
     $('btnTaskAcceptAll').hidden = !taskCapabilities.accept;
     $('btnTaskAutoAll').hidden = !taskCapabilities.automate;
-    $('taskNote').textContent = d.message || (d.realm === 'global' ? '国际区任务当前仅支持查询，请在官方客户端完成。' : '');
+    $('taskNote').textContent = d.message || (d.realm === 'global' ? '国际版任务可查询，自动完成与领奖尚未验证可用；请先在官方客户端操作并刷新状态。' : '');
     $('taskNote').hidden = !$('taskNote').textContent;
     const list = d.tasks || [];
     if (!list.length) {
@@ -2828,7 +2830,7 @@ async function loadTasks() {
       // 操作指引（description/task_desc）挂 title 提示：如何完成交给用户看
       const tip = [t.title, t.task_desc || t.description, t.jump_url ? '跳转：' + t.jump_url : ''].filter(Boolean).join('\n');
       return '<tr title="' + esc(tip) + '"><td class="mark" aria-hidden="true"><i></i></td>' +
-        '<td class="who"><div class="nm">' + esc(t.title || row.code) + '</div><div class="id">' + esc(row.code) + (t.tag ? ' · ' + esc(t.tag) : '') + '</div></td>' +
+        '<td class="who"><div class="nm">' + esc(t.title || row.code) + '</div><div class="id">' + esc(row.code) + (t.tag ? ' · ' + esc(t.tag) : '') + '</div>' + (d.realm === 'global' && row.detail ? '<div class="hint">' + esc(row.detail) + '</div>' : '') + '</td>' +
         '<td class="num">' + esc(row.progress) + '</td>' +
         '<td class="num">' + esc(row.reward) + '</td>' +
         '<td>' + badge + '</td>' +

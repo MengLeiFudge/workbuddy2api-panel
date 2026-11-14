@@ -119,6 +119,9 @@ func TestCheckinReceiptGlobalFallbackKeepsRaw(t *testing.T) {
 	var paths []string
 	c := testClient(func(r *http.Request) (*http.Response, error) {
 		paths = append(paths, r.URL.Path)
+		if r.URL.Path == checkinActivityPath {
+			return jsonResp(200, `{"code":0,"data":{"active":true,"today_checked_in":false}}`), nil
+		}
 		if r.URL.Path == "/billing/meter/daily-checkin" {
 			return jsonResp(404, `{"code":404,"msg":"not found"}`), nil
 		}
@@ -129,7 +132,7 @@ func TestCheckinReceiptGlobalFallbackKeepsRaw(t *testing.T) {
 	if err != nil {
 		t.Fatalf("global 回落应成功: %v", err)
 	}
-	if len(paths) != 2 || rec.State != CheckinChecked || !rec.CreditKnown || rec.Credit != 50 {
+	if len(paths) != 3 || paths[0] != checkinActivityPath || paths[1] != dailyCheckinPath || paths[2] != dailyCheckinPathV2 || rec.State != CheckinChecked || !rec.CreditKnown || rec.Credit != 50 {
 		t.Fatalf("paths=%v rec=%+v", paths, rec)
 	}
 }

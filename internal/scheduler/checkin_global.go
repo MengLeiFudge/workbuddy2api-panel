@@ -40,33 +40,21 @@ func (s *Scheduler) checkinGlobal(a *auth.Auth) {
 		return
 	}
 	label := logfmt.Label(a.UID, a.Nickname)
-	act, err := s.cfg.Upstream.GetCheckinActivityStatus(a)
-	if err != nil {
-		log.Printf("WARN: checkin %s: 国际版活动状态查询失败（不发签到请求）: %v", label, err)
-		return
-	}
-	if !act.Active {
-		// 常态：国际版活动未配置。一行 INFO 级别的显形（只在到点时打一次），
-		// 让人能确认「没签是因为活动没开」而不是「网关忘了签」。
-		log.Printf("checkin %s: 国际版签到活动未开启（每日 %d 积分），跳过", label, act.DailyCredit)
-		return
-	}
-	if act.TodayCheckedIn {
-		// 上游 today_checked_in 是权威事实（本机 checkin_done 只记我们自己签的）。
+	receipt, err := s.cfg.Upstream.CheckinReceipt(a)
+	switch receipt.State {
+	case upstream.CheckinInactive:
+		log.Printf("checkin %s: %s", label, receipt.Msg)
+	case upstream.CheckinAlready:
 		s.cfg.Pool.NoteCheckinDone(a.UID)
-		log.Printf("checkin %s: 国际版今天已签到（连登 %d 天，每日 %d 积分）", label, act.StreakDays, act.DailyCredit)
-		return
-	}
-	if err := s.cfg.Upstream.DailyCheckin(a); err != nil {
-		if upstream.IsAlreadyCheckin(err) {
-			// 幂等：并发/重复触发时上游回「今天已签到」，语义是成功。
-			s.cfg.Pool.NoteCheckinDone(a.UID)
-			log.Printf("checkin %s: 国际版今天已签到（幂等）", label)
-			return
+		log.Printf("checkin %s: 国际版今天已签到（连登 %d 天）", label, receipt.StreakDays)
+	case upstream.CheckinChecked:
+		s.cfg.Pool.NoteCheckinDone(a.UID)
+		if receipt.CreditKnown {
+			log.Printf("checkin %s: 国际版签到成功（本次 +%d 积分）", label, receipt.Credit)
+		} else {
+			log.Printf("checkin %s: 国际版签到成功（上游未返回本次积分）", label)
 		}
-		log.Printf("WARN: checkin %s: 国际版签到失败: %v", label, err)
-		return
+	default:
+		log.Printf("WARN: checkin %s: 国际版签到未完成: %s（%v）", label, receipt.Msg, err)
 	}
-	s.cfg.Pool.NoteCheckinDone(a.UID)
-	log.Printf("checkin %s: 国际版签到成功（每日 %d 积分）", label, act.DailyCredit)
 }
